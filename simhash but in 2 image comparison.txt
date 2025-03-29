@@ -1,0 +1,55 @@
+import cv2 as cv
+import numpy as np
+from simhash import Simhash
+
+def image_to_feature_vector(image_path, size=(128, 128)):
+    """Convert an image to a feature vector by resizing, extracting color and shape information."""
+    image = cv.imread(image_path, cv.IMREAD_COLOR)  # Read in RGB mode
+    if image is None:
+        raise FileNotFoundError(f"Error: Could not read image {image_path}")
+    image = cv.resize(image, size)
+    
+    # Extract edge features using Canny edge detection
+    gray = cv.cvtColor(image, cv.COLOR_BGR2GRAY)
+    edges = cv.Canny(gray, 100, 200)  # Detect edges
+    
+    # Flatten both RGB and edge data
+    color_features = image.flatten()
+    edge_features = edges.flatten()
+    
+    return np.concatenate((color_features, edge_features))  # Combine color and shape features
+
+def compute_simhash(image_path):
+    """Compute the SimHash of an image based on its feature vector."""
+    feature_vector = image_to_feature_vector(image_path)
+    feature_groups = [str(int(x)) for x in feature_vector[:1024]]  # Take first 1024 values (RGB + Edges)
+    return Simhash(feature_groups)
+
+def hamming_distance(hash1, hash2):
+    """Compute the Hamming distance between two SimHash values."""
+    return hash1.distance(hash2)
+
+def main():
+    image1 = "image1.jpg"  # Replace with actual image paths
+    image2 = "image2.jpg"
+    
+    try:
+        simhash1 = compute_simhash(image1)
+        simhash2 = compute_simhash(image2)
+    except FileNotFoundError as e:
+        print(e)
+        return
+    
+    distance = hamming_distance(simhash1, simhash2)
+    
+    print(f"SimHash 1: {simhash1.value}")
+    print(f"SimHash 2: {simhash2.value}")
+    print(f"Hamming Distance: {distance}")
+    
+    if distance < 10:
+        print("Images are similar.")
+    else:
+        print("Images are different.")
+
+if __name__ == "__main__":
+    main()

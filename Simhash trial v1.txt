@@ -1,0 +1,109 @@
+import cv2 as cv
+import numpy as np
+from simhash import Simhash
+import torch
+import torchvision.transforms as transforms
+from torchvision import models
+import pywt
+
+# Load a pre-trained AI detection model (EfficientNet-B0 for feature extraction)
+ai_model = models.efficientnet_b0(pretrained=True)
+ai_model.eval()
+
+transform = transforms.Compose([
+    transforms.ToPILImage(),
+    transforms.Resize((224, 224)),
+    transforms.ToTensor()
+])
+
+def image_to_feature_vector(image_path, size=(64, 64)):
+    """Convert an image to a feature vector by extracting color, shape, texture, and frequency information."""
+    image = cv.imread(image_path, cv.IMREAD_COLOR)
+    if image is None:
+        raise FileNotFoundError(f"Error: Could not read image {image_path}")
+    image = cv.resize(image, size)
+    
+    # Extract edge features using Canny edge detection
+    gray = cv.cvtColor(image, cv.COLOR_BGR2GRAY)
+    edges = cv.Canny(gray, 100, 200)
+    
+    # Extract high-frequency texture details
+    laplacian = cv.Laplacian(gray, cv.CV_64F).var()
+    noise = np.std(gray)
+    
+    # Compute color statistics
+    mean_color = np.mean(image, axis=(0, 1))
+    color_std_dev = np.std(image, axis=(0, 1))
+    
+    # Frequency domain analysis using Discrete Wavelet Transform (DWT)
+    coeffs2 = pywt.dwt2(gray, 'haar')
+    cA, (cH, cV, cD) = coeffs2
+    wavelet_features = np.array([np.mean(np.abs(cH)), np.mean(np.abs(cV)), np.mean(np.abs(cD))])
+    
+    # Texture analysis using OpenCV's GLCM (Gray Level Co-occurrence Matrix)
+    glcm = np.zeros((256, 256), dtype=np.float32)
+    for i in range(gray.shape[0] - 1):
+        for j in range(gray.shape[1] - 1):
+            x, y = gray[i, j], gray[i+1, j]
+            glcm[x, y] += 1
+    glcm = glcm / glcm.sum()  # Normalize GLCM
+    
+    # Extract GLCM properties
+    contrast = np.sum(np.square(np.arange(256) - np.arange(256)[:, None]) * glcm)
+    homogeneity = np.sum(glcm / (1 + np.abs(np.arange(256) - np.arange(256)[:, None])))
+    energy = np.sum(glcm ** 2)
+    
+    # Compute correlation by comparing pixel pairs
+    mean_x = np.mean(np.arange(256))
+    mean_y = np.mean(np.arange(256))
+    num = np.sum((np.arange(256) - mean_x) * (np.arange(256) - mean_y) * glcm)
+    den = np.sqrt(np.sum(np.square(np.arange(256) - mean_x) * glcm) * np.sum(np.square(np.arange(256) - mean_y) * glcm))
+    correlation = num / den if den != 0 else 0
+    
+    texture_features = np.array([contrast, homogeneity, energy, correlation])
+    
+    # Deep Learning Feature Extraction
+    image_tensor = transform(image).unsqueeze(0)
+    with torch.no_grad():
+        deep_features = ai_model(image_tensor).flatten().numpy()
+    
+    return np.concatenate((edges.flatten(), wavelet_features, texture_features, deep_features))
+
+def compute_simhash(image_path):
+    """Compute the SimHash of an image based on its feature vector."""
+    feature_vector = image_to_feature_vector(image_path)
+    feature_groups = [str(int(x)) for x in feature_vector[:2048]]
+    return Simhash(feature_groups, f=128)
+
+def detect_ai_alteration(image_path, sharpness_threshold=1000, noise_threshold=15, color_threshold=50, freq_threshold=10, texture_threshold=0.5, deep_threshold=0.5):
+    """Determine if an image is AI-enhanced based on multiple feature analyses."""
+    feature_vector = image_to_feature_vector(image_path)
+    
+    wavelet_features = feature_vector[-515:-512]
+    texture_features = feature_vector[-512:-506]
+    deep_features = feature_vector[-506:]
+    
+    freq_energy = np.mean(np.abs(wavelet_features))
+    texture_uniformity = np.mean(texture_features)
+    deep_ai_score = np.mean(np.abs(deep_features))
+    
+    print(f"Frequency Energy: {freq_energy}")
+    print(f"Texture Uniformity: {texture_uniformity}")
+    print(f"Deep AI Feature Score: {deep_ai_score}")
+    
+    if freq_energy > freq_threshold and texture_uniformity < texture_threshold and deep_ai_score > deep_threshold:
+        print("Warning: This image may have been AI-enhanced!")
+    else:
+        print("No strong signs of AI enhancement detected.")
+
+def main():
+    image1 = "images/image12.jpg"  # Replace with actual image path
+    
+    try:
+        detect_ai_alteration(image1)
+    except FileNotFoundError as e:
+        print(e)
+        return
+
+if __name__ == "__main__":
+    main()
