@@ -63,7 +63,8 @@ def detect_forgery(image_path, dataset_folder, threshold=15):
     """Compare the image's SimHash with a dataset of original images to detect splicing or copy-move forgery."""
     image_hash = compute_simhash(image_path)
     
-    similar_images = []
+    closest_match = None
+    min_distance = float('inf')
     
     for file in os.listdir(dataset_folder):
         file_path = os.path.join(dataset_folder, file)
@@ -71,19 +72,18 @@ def detect_forgery(image_path, dataset_folder, threshold=15):
             dataset_hash = compute_simhash(file_path)
             distance = hamming_distance(image_hash, dataset_hash)
             
-            if distance <= threshold:
-                similar_images.append((file, distance))
+            if distance < min_distance:
+                min_distance = distance
+                closest_match = file
     
-    if similar_images:
-        print(f"Possible forgery detected! Similar images found:")
-        for img, dist in similar_images:
-            print(f" - {img} (Hamming Distance: {dist})")
+    if closest_match and min_distance <= threshold:
+        print(f"Selected image is similar to: {closest_match} (Hamming Distance: {min_distance})")
     else:
-        print("No significant signs of forgery detected.")
+        print("No significant similarity found.")
 
 def main():
-    image1 = "forged/12731.jpg"  # Replace with actual image path
-    dataset_folder = "original"  # Folder containing reference/original images
+    image1 = "Fraud/11272.jpg"  # Replace with actual image path
+    dataset_folder = "Authentic"  # Folder containing reference/original images
     
     try:
         detect_forgery(image1, dataset_folder)
@@ -93,4 +93,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
