@@ -149,7 +149,7 @@ def main():
     model_save_path = "cnn_model.pth"
     train_cnn(dataset_path, model_save_path)  # Train the CNN
     
-    image1 = "DataSet/Fraud/10995.jpg"
+    image1 = "DataSet/Fraud/image2.jpg"
     dataset_folder = "DataSet/Authentic"
     
     try:
