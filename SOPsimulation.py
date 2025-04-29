@@ -2,6 +2,9 @@ import cv2
 import numpy as np
 import hashlib
 from collections import defaultdict
+import matplotlib
+matplotlib.use('Agg')  # Use a non-GUI backend
+import matplotlib.pyplot as plt
 
 def image_to_tokens(image):
     """Splits an image into pixel-based tokens (ineffective for meaningful feature extraction)."""
@@ -42,6 +45,21 @@ def compare_hashes(hash1, hash2):
     """Computes Hamming distance between two hashes."""
     return bin(hash1 ^ hash2).count('1')
 
+def show_image_comparison(image1, image2, title1, title2):
+    """Saves images for comparison instead of displaying them in a GUI."""
+    fig, axes = plt.subplots(1, 2, figsize=(12, 6))
+    axes[0].imshow(cv2.cvtColor(image1, cv2.COLOR_BGR2RGB))
+    axes[0].set_title(title1)
+    axes[0].axis('off')
+    
+    axes[1].imshow(cv2.cvtColor(image2, cv2.COLOR_BGR2RGB))
+    axes[1].set_title(title2)
+    axes[1].axis('off')
+    
+    # Save the comparison image
+    plt.savefig('image_comparison.png')
+    plt.close()
+
 # Load images
 image_original = cv2.imread('DataSet/Authentic/566.jpg')
 image_modified1 = cv2.imread('DataSet/Fraud/10995.jpg')
@@ -70,3 +88,6 @@ simhash_modified1 = compute_simhash(tokens_modified1)
 distance2 = compare_hashes(simhash_original, simhash_modified1)
 print(f"Problem 4: Merging Issue - SimHash Copy-Move Forgery: {simhash_modified1}")
 print(f"Problem 4: Merging Issue - Hamming Distance (Original vs Modified 1): {distance2}")
+
+# Save the image comparison instead of showing it
+show_image_comparison(image_original, image_modified1, 'Original Image', 'Modified Image')
