@@ -1,4 +1,6 @@
+
 import os
+import kagglehub
 import cv2 as cv
 import numpy as np
 import pywt
@@ -206,9 +208,8 @@ def detect_forgery(image_path, dataset_folder, hamming_threshold=40, cosine_thre
 
 # ------------------ Main Function ------------------
 def main():
-    dataset_path = "DataSet"
+    dataset_path = kagglehub.dataset_download("labid93/image-forgery-detection")
     model_save_path = "cnn_model.pth"
-
     train_cnn(dataset_path, model_save_path)  # Train the CNN
 
     image1 = "DataSet/Fraud/6(2).jpg"
