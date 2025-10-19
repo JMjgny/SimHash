@@ -1,126 +1,22 @@
-
 import os
-import kagglehub
 import cv2 as cv
 import numpy as np
-import pywt
-from simhash import Simhash
+import imagehash
+from PIL import Image
 from sklearn.metrics.pairwise import cosine_similarity
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-import torch.optim as optim
-from torch.utils.data import DataLoader, Subset, WeightedRandomSampler
+import torchvision.models as models
 import torchvision.transforms as transforms
-import torchvision.datasets as datasets
-from sklearn.model_selection import train_test_split
+from scipy.ndimage import gaussian_filter
+import shutil
+import kagglehub
 
-# ------------------ CNN Model ------------------
-class ForgeryCNN(nn.Module):
-    def __init__(self):
-        super(ForgeryCNN, self).__init__()
-        self.conv1 = nn.Conv2d(3, 32, kernel_size=3, padding=1)
-        self.conv2 = nn.Conv2d(32, 64, kernel_size=3, padding=1)
-        self.conv3 = nn.Conv2d(64, 128, kernel_size=3, padding=1)
-        self.conv4 = nn.Conv2d(128, 256, kernel_size=3, padding=1)
-        self.fc1 = nn.Linear(256 * 4 * 4, 512)
-        self.fc2 = nn.Linear(512, 128)
-
-    def forward(self, x):
-        x = F.relu(self.conv1(x))
-        x = F.max_pool2d(x, 2)
-        x = F.relu(self.conv2(x))
-        x = F.max_pool2d(x, 2)
-        x = F.relu(self.conv3(x))
-        x = F.max_pool2d(x, 2)
-        x = F.relu(self.conv4(x))
-        x = F.max_pool2d(x, 2)
-        x = x.view(x.size(0), -1)
-        x = F.relu(self.fc1(x))
-        x = self.fc2(x)
-        return x
-
-# ------------------ Data Loading with Augmentation ------------------
-def load_data(dataset_path, batch_size=16):
-    transform = transforms.Compose([
-        transforms.RandomHorizontalFlip(),
-        transforms.RandomRotation(10),
-        transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2),
-        transforms.Resize((64, 64)),
-        transforms.ToTensor()
-    ])
-
-    dataset = datasets.ImageFolder(root=dataset_path, transform=transform)
-
-    # Compute class weights to balance fraud and authentic
-    class_counts = np.bincount(dataset.targets)
-    class_weights = 1. / class_counts
-    weights = class_weights[dataset.targets]
-    sampler = WeightedRandomSampler(weights, num_samples=len(weights), replacement=True)
-
-    train_idx, val_idx = train_test_split(list(range(len(dataset))), test_size=0.2, stratify=dataset.targets)
-    train_dataset = Subset(dataset, train_idx)
-    val_dataset = Subset(dataset, val_idx)
-
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, drop_last=True)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
-
-    return train_loader, val_loader
-
-# ------------------ Training the CNN ------------------
-def train_cnn(dataset_path, model_save_path, epochs=10, batch_size=16, learning_rate=0.001):
-    train_loader, val_loader = load_data(dataset_path, batch_size)
-    
-    model = ForgeryCNN()
-    criterion = nn.CrossEntropyLoss()
-    optimizer = optim.Adam(model.parameters(), lr=learning_rate)
-
-    for epoch in range(epochs):
-        model.train()
-        total_loss = 0
-
-        for images, labels in train_loader:
-            optimizer.zero_grad()
-            outputs = model(images)
-            loss = criterion(outputs, labels)
-            loss.backward()
-            optimizer.step()
-            total_loss += loss.item()
-        
-        # Validation
-        model.eval()
-        val_loss = 0
-        correct = 0
-        total = 0
-        with torch.no_grad():
-            for images, labels in val_loader:
-                outputs = model(images)
-                loss = criterion(outputs, labels)
-                val_loss += loss.item()
-
-                _, predicted = torch.max(outputs, 1)
-                total += labels.size(0)
-                correct += (predicted == labels).sum().item()
-
-        print(f"Epoch [{epoch+1}/{epochs}], Train Loss: {total_loss/len(train_loader):.4f}, Val Loss: {val_loss/len(val_loader):.4f}, Val Acc: {correct/total:.4f}")
-
-    torch.save(model.state_dict(), model_save_path)
-    print("Model training complete. Saved to", model_save_path)
-
-# ------------------ Feature Extraction ------------------
-cnn_model = ForgeryCNN()
-model_path = "cnn_model.pth"
-if os.path.exists(model_path):
-    cnn_model.load_state_dict(torch.load(model_path))
-cnn_model.eval()
-
-transform = transforms.Compose([
-    transforms.ToPILImage(),
-    transforms.Resize((64, 64)),
-    transforms.ToTensor()
-])
-
-def preprocess_image(image_path, size=(64, 64)):
+# ------------------ Step 1: Image Preprocessing ------------------
+def preprocess_image(image_path, size=(224, 224)):
+    """
+    Enhanced preprocessing with CLAHE, Non-Local Means Denoising, and Unsharp Masking
+    """
     if not os.path.exists(image_path):
         raise FileNotFoundError(f"Error: Image not found {image_path}")
     
@@ -128,97 +24,327 @@ def preprocess_image(image_path, size=(64, 64)):
     if image is None:
         raise FileNotFoundError(f"Error: Could not read image {image_path}")
     
-    image = cv.GaussianBlur(image, (3, 3), 0)
+    # Convert to LAB color space for CLAHE
+    lab = cv.cvtColor(image, cv.COLOR_BGR2LAB)
+    l, a, b = cv.split(lab)
+    
+    # Apply CLAHE (Contrast Limited Adaptive Histogram Equalization)
+    clahe = cv.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    l = clahe.apply(l)
+    
+    # Merge back and convert to BGR
+    lab = cv.merge([l, a, b])
+    image = cv.cvtColor(lab, cv.COLOR_LAB2BGR)
+    
+    # Apply Non-Local Means Denoising
+    image = cv.fastNlMeansDenoisingColored(image, None, 10, 10, 7, 21)
+    
+    # Unsharp masking for edge sharpening
+    gaussian = cv.GaussianBlur(image, (0, 0), 2.0)
+    image = cv.addWeighted(image, 1.5, gaussian, -0.5, 0)
+    
+    # Resize to standard size
     image = cv.resize(image, size)
-    image = cv.cvtColor(image, cv.COLOR_BGR2RGB)  
+    image_rgb = cv.cvtColor(image, cv.COLOR_BGR2RGB)
     
-    return image
+    return image_rgb, image
 
-def image_to_feature_vector(image_path):
-    image = preprocess_image(image_path)
-    gray_image = cv.cvtColor(image, cv.COLOR_RGB2GRAY)
-    
-    coeffs2 = pywt.dwt2(gray_image, 'haar')
-    cA, (cH, cV, cD) = coeffs2
-    wavelet_features = np.array([np.mean(np.abs(cH)), np.mean(np.abs(cV)), np.mean(np.abs(cD))])
-    
-    orb = cv.ORB_create(nfeatures=500)
-    keypoints, descriptors = orb.detectAndCompute(gray_image, None)
-    orb_features = np.mean(descriptors, axis=0) if descriptors is not None else np.zeros(32)
-    
-    image_tensor = transform(image).unsqueeze(0)
+# ------------------ Step 2: Feature Extraction using ResNet-50 ------------------
+class ResNet50FeatureExtractor(nn.Module):
+    def __init__(self):
+        super(ResNet50FeatureExtractor, self).__init__()
+        resnet = models.resnet50(pretrained=True)
+        # Remove the final classification layer
+        self.features = nn.Sequential(*list(resnet.children())[:-1])
+        
+    def forward(self, x):
+        x = self.features(x)
+        x = x.view(x.size(0), -1)
+        return x
+
+# Initialize ResNet-50 feature extractor
+resnet_extractor = ResNet50FeatureExtractor()
+resnet_extractor.eval()
+
+transform = transforms.Compose([
+    transforms.ToPILImage(),
+    transforms.Resize((224, 224)),
+    transforms.ToTensor(),
+    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+])
+
+def extract_deep_features(image_rgb):
+    """Extract high-level features using ResNet-50"""
+    image_tensor = transform(image_rgb).unsqueeze(0)
     with torch.no_grad():
-        deep_features = cnn_model(image_tensor).flatten().numpy()
-    
-    feature_vector = np.concatenate((wavelet_features, orb_features, deep_features))
-    
-    feature_vector = (feature_vector - np.mean(feature_vector)) / (np.std(feature_vector) + 1e-5)
-    
-    return feature_vector
+        features = resnet_extractor(image_tensor)
+    return features.flatten().numpy()
 
-def compute_simhash(feature_vector):
-    feature_groups = [str(int(x * 1000)) for x in feature_vector[:128]]
-    return Simhash(' '.join(feature_groups), f=128)
+# ------------------ Step 2 & 3: Region Segmentation and Perceptual Hashing ------------------
+def compute_saliency_map(image):
+    """Compute saliency map using spectral residual method"""
+    gray = cv.cvtColor(image, cv.COLOR_BGR2GRAY) if len(image.shape) == 3 else image
+    
+    # Create saliency detector
+    saliency = cv.saliency.StaticSaliencySpectralResidual_create()
+    success, saliency_map = saliency.computeSaliency(image)
+    
+    if not success:
+        # Fallback: simple gradient-based saliency
+        grad_x = cv.Sobel(gray, cv.CV_64F, 1, 0, ksize=3)
+        grad_y = cv.Sobel(gray, cv.CV_64F, 0, 1, ksize=3)
+        saliency_map = np.sqrt(grad_x**2 + grad_y**2)
+        saliency_map = (saliency_map * 255 / np.max(saliency_map)).astype(np.uint8)
+    else:
+        saliency_map = (saliency_map * 255).astype(np.uint8)
+    
+    return saliency_map
 
+def segment_image_regions(image, saliency_map, num_regions=16):
+    """
+    Divide image into regions based on grid and compute regional properties
+    """
+    h, w = image.shape[:2]
+    grid_h = int(np.sqrt(num_regions))
+    grid_w = num_regions // grid_h
+    
+    region_h = h // grid_h
+    region_w = w // grid_w
+    
+    regions = []
+    region_weights = []
+    
+    for i in range(grid_h):
+        for j in range(grid_w):
+            y1, y2 = i * region_h, (i + 1) * region_h
+            x1, x2 = j * region_w, (j + 1) * region_w
+            
+            region = image[y1:y2, x1:x2]
+            saliency_region = saliency_map[y1:y2, x1:x2]
+            
+            # Calculate region weight based on saliency
+            weight = np.mean(saliency_region) / 255.0
+            
+            regions.append(region)
+            region_weights.append(weight)
+    
+    # Normalize weights
+    total_weight = sum(region_weights)
+    region_weights = [w / total_weight for w in region_weights]
+    
+    return regions, region_weights
+
+def compute_regional_phash(region):
+    """Compute perceptual hash for a region"""
+    region_pil = Image.fromarray(cv.cvtColor(region, cv.COLOR_BGR2RGB))
+    phash = imagehash.phash(region_pil, hash_size=8)
+    return phash
+
+# ------------------ Step 4 & 5: Adaptive Weighting and Merging ------------------
+def compute_weighted_simhash(image, num_regions=16):
+    """
+    Compute weighted SimHash from regional perceptual hashes
+    Steps 2-5 of the algorithm
+    """
+    # Compute saliency map
+    saliency_map = compute_saliency_map(image)
+    
+    # Segment image into regions
+    regions, weights = segment_image_regions(image, saliency_map, num_regions)
+    
+    # Compute perceptual hash for each region
+    regional_hashes = []
+    for region in regions:
+        phash = compute_regional_phash(region)
+        regional_hashes.append(phash)
+    
+    # Merge weighted hashes into final SimHash
+    # Convert hashes to binary arrays and apply weights
+    hash_size = 64  # 8x8 phash
+    final_hash = np.zeros(hash_size)
+    
+    for phash, weight in zip(regional_hashes, weights):
+        hash_array = np.array([int(b) for b in bin(int(str(phash), 16))[2:].zfill(hash_size)])
+        final_hash += hash_array * weight
+    
+    # Threshold to create binary hash
+    final_hash = (final_hash > 0.5).astype(int)
+    
+    # Convert to hex string for storage
+    hash_value = int(''.join(map(str, final_hash)), 2)
+    
+    return hash_value, regional_hashes, weights
+
+# ------------------ Step 6: Hamming Distance Calculation ------------------
 def hamming_distance(hash1, hash2):
-    return hash1.distance(hash2)
+    """Compute Hamming distance between two hash values"""
+    return bin(hash1 ^ hash2).count('1')
 
-# ------------------ Forgery Detection ------------------
-def detect_forgery(image_path, dataset_folder, hamming_threshold=40, cosine_threshold=0.85):
+# ------------------ Step 7: Image Retrieval and Matching ------------------
+def detect_forgery(image_path, dataset_folder, hamming_threshold=15, top_n=5):
+    """
+    Complete forgery detection pipeline following the algorithm
+    """
     if not os.path.exists(dataset_folder):
         raise FileNotFoundError(f"Error: Dataset folder not found {dataset_folder}")
     
-    print(f"Scanning dataset folder: {dataset_folder}")
-    print("Files in dataset folder:", os.listdir(dataset_folder))
-
-    query_vector = image_to_feature_vector(image_path)
-    query_hash = compute_simhash(query_vector)
+    print(f"\n{'='*60}")
+    print(f"Analyzing image: {os.path.basename(image_path)}")
+    print(f"{'='*60}\n")
     
-    closest_match = None
-    min_combined_score = float('inf')
-    best_details = None
-
+    # Step 1: Preprocess input image
+    print("Step 1: Preprocessing input image...")
+    query_image_rgb, query_image_bgr = preprocess_image(image_path)
+    
+    # Steps 2-5: Extract features and compute weighted SimHash
+    print("Steps 2-5: Extracting features and computing weighted SimHash...")
+    query_hash, _, _ = compute_weighted_simhash(query_image_bgr)
+    query_deep_features = extract_deep_features(query_image_rgb)
+    
+    # Step 7: Compare with dataset
+    print(f"Step 7: Comparing with dataset images...\n")
+    
+    matches = []
+    
     for file in os.listdir(dataset_folder):
         file_path = os.path.join(dataset_folder, file)
-        if os.path.isfile(file_path):
-            print(f"Processing: {file}")
-            db_vector = image_to_feature_vector(file_path)
-            db_hash = compute_simhash(db_vector)
-            
-            ham_dist = hamming_distance(query_hash, db_hash)
-            cos_sim = cosine_similarity([query_vector], [db_vector])[0][0]
-
-            print(f"{file}: Hamming Distance = {ham_dist}, Cosine Similarity = {cos_sim:.4f}")
-            
-            combined_score = ham_dist - (cos_sim * 100)
-
-            if combined_score < min_combined_score:
-                min_combined_score = combined_score
-                closest_match = file
-                best_details = (ham_dist, cos_sim)
+        if os.path.isfile(file_path) and file.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp')):
+            try:
+                # Preprocess database image
+                db_image_rgb, db_image_bgr = preprocess_image(file_path)
+                
+                # Compute hash and features
+                db_hash, _, _ = compute_weighted_simhash(db_image_bgr)
+                db_deep_features = extract_deep_features(db_image_rgb)
+                
+                # Step 6: Calculate Hamming distance
+                ham_dist = hamming_distance(query_hash, db_hash)
+                
+                # Additional: Cosine similarity for deep features
+                cos_sim = cosine_similarity([query_deep_features], [db_deep_features])[0][0]
+                
+                matches.append({
+                    'filename': file,
+                    'hamming_distance': ham_dist,
+                    'cosine_similarity': cos_sim,
+                    'combined_score': ham_dist - (cos_sim * 20)  # Lower is better
+                })
+                
+            except Exception as e:
+                print(f"Error processing {file}: {e}")
+                continue
     
-    if closest_match and best_details:
-        ham_dist, cos_sim = best_details
-        if ham_dist <= hamming_threshold and cos_sim >= cosine_threshold:
-            print(f"Selected image is similar to: {closest_match} (Hamming Distance: {ham_dist}, Cosine Similarity: {cos_sim:.4f})")
+    # Sort by combined score (lower is better)
+    matches.sort(key=lambda x: x['combined_score'])
+    
+    # Display results
+    print(f"\n{'='*60}")
+    print(f"TOP {min(top_n, len(matches))} MATCHES:")
+    print(f"{'='*60}\n")
+    
+    for i, match in enumerate(matches[:top_n], 1):
+        print(f"Rank {i}: {match['filename']}")
+        print(f"  Hamming Distance: {match['hamming_distance']}")
+        print(f"  Cosine Similarity: {match['cosine_similarity']:.4f}")
+        print(f"  Combined Score: {match['combined_score']:.2f}")
+        
+        if match['hamming_distance'] <= hamming_threshold:
+            print(f"  ⚠️  POTENTIAL FORGERY DETECTED (Below threshold)")
+        print()
+    
+    # Return best match
+    if matches:
+        best_match = matches[0]
+        if best_match['hamming_distance'] <= hamming_threshold:
+            print(f"✓ CONCLUSION: Image is similar to '{best_match['filename']}'")
+            print(f"  This suggests potential forgery or manipulation.")
         else:
-            print("No significant similarity found.")
+            print(f"✓ CONCLUSION: No significant similarity found.")
+            print(f"  Image appears to be authentic or heavily modified.")
     else:
-        print("No images processed.")
+        print("No matches found in dataset.")
+    
+    return matches
 
-# ------------------ Main Function ------------------
+# ------------------ Dataset Merging Utility ------------------
+def merge_datasets(kaggle_root, my_authentic, my_fraud, merged_root):
+    """Merge Kaggle dataset with custom dataset"""
+    dataset_folder = os.path.join(kaggle_root, "Dataset")
+    kaggle_original = os.path.join(dataset_folder, "Original")
+    kaggle_forged = os.path.join(dataset_folder, "Forged")
+        
+    merged_original = os.path.join(merged_root, "Original")
+    merged_forged = os.path.join(merged_root, "Forged")
+
+    # Clean up old merged dataset if it exists
+    if os.path.exists(merged_root):
+        shutil.rmtree(merged_root)
+
+    os.makedirs(merged_original, exist_ok=True)
+    os.makedirs(merged_forged, exist_ok=True)
+
+    # Copy Kaggle Originals
+    if os.path.exists(kaggle_original):
+        for f in os.listdir(kaggle_original):
+            src = os.path.join(kaggle_original, f)
+            dst = os.path.join(merged_original, f"Kaggle_{f}")
+            shutil.copy(src, dst)
+
+    # Copy Kaggle Forged
+    if os.path.exists(kaggle_forged):
+        for f in os.listdir(kaggle_forged):
+            src = os.path.join(kaggle_forged, f)
+            dst = os.path.join(merged_forged, f"Kaggle_{f}")
+            shutil.copy(src, dst)
+
+    # Copy your Authentic
+    if os.path.exists(my_authentic):
+        for f in os.listdir(my_authentic):
+            src = os.path.join(my_authentic, f)
+            dst = os.path.join(merged_original, f"MyAuth_{f}")
+            shutil.copy(src, dst)
+
+    # Copy your Fraud
+    if os.path.exists(my_fraud):
+        for f in os.listdir(my_fraud):
+            src = os.path.join(my_fraud, f)
+            dst = os.path.join(merged_forged, f"MyFraud_{f}")
+            shutil.copy(src, dst)
+
+    print(f"Dataset merged successfully to: {merged_root}")
+    return merged_root
+
+# ------------------ Main Execution ------------------
 def main():
-    dataset_path = kagglehub.dataset_download("labid93/image-forgery-detection")
-    model_save_path = "cnn_model.pth"
-    train_cnn(dataset_path, model_save_path)  # Train the CNN
+    # Download Kaggle dataset
+    print("Downloading Kaggle dataset...")
+    dataset_root = kagglehub.dataset_download("labid93/image-forgery-detection")
+    print(f"Dataset downloaded to: {dataset_root}")
 
-    image1 = "DataSet/Fraud/6(2).jpg"
-    dataset_folder = "DataSet/Authentic"
+    my_authentic = "DataSet/Authentic"
+    my_fraud = "DataSet/Fraud"
+    merged_root = "MergedDataSet"
+    
+    # Merge datasets
+    print("\nMerging datasets...")
+    dataset_path = merge_datasets(dataset_root, my_authentic, my_fraud, merged_root)
+
+    # Test forgery detection
+    print("\n" + "="*60)
+    print("STARTING FORGERY DETECTION")
+    print("="*60)
+    
+    # Example: Test with a fraud image
+    test_image = os.path.join(my_fraud, "12857.jpg")
+    dataset_folder = os.path.join(dataset_path, "Original")
 
     try:
-        detect_forgery(image1, dataset_folder)
+        matches = detect_forgery(test_image, dataset_folder, hamming_threshold=15, top_n=5)
     except FileNotFoundError as e:
-        print(e)
+        print(f"Error: {e}")
+        return
+    except Exception as e:
+        print(f"Unexpected error: {e}")
         return
 
 if __name__ == "__main__":
