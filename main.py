@@ -1,7 +1,7 @@
 import os
 import torch
 import kagglehub
-from forgery_detector import detect_forgery
+from forgery_detector import detect_forgery_with_metrics
 from feature_extractor import get_feature_extractor
 
 def main():
@@ -35,11 +35,11 @@ def main():
     
     feature_extractor = get_feature_extractor()
     
-    test_image = os.path.join(forged_folder, "11859.jpg")
+    test_image = os.path.join(forged_folder, "11037.jpg")
     dataset_folder = original_folder
 
     try:
-        matches = detect_forgery(test_image, dataset_folder, feature_extractor)
+        matches, stats = detect_forgery_with_metrics(test_image, dataset_folder, feature_extractor)
     except FileNotFoundError as e:
         print(f"Error: {e}")
         return
