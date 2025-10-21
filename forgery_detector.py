@@ -1,15 +1,16 @@
 import os
 import torch
+import numpy as np
 import time
 import pandas as pd
 from collections import defaultdict
 from sklearn.metrics.pairwise import cosine_similarity
 from preprocessing import preprocess_image
 from hashing import compute_weighted_simhash, hamming_distance
-from feature_extractor import extract_deep_features, device
+from feature_extractor import extract_deep_features,get_feature_extractor, device
 
 def detect_forgery_with_metrics(image_path, dataset_folder, feature_extractor, 
-                               hamming_threshold=15, top_n=5):
+                               hamming_threshold=15, top_n=1):
     """
     Enhanced forgery detection pipeline with detailed timing and similarity logging.
     Returns:
@@ -154,3 +155,32 @@ def detect_forgery_with_metrics(image_path, dataset_folder, feature_extractor,
         print(f"{key}: {stats[key][0]:.4f} seconds")
 
     return matches, df_stats
+
+def run_improved_pairwise(original_img_path, forged_img_path):
+    # Initialize feature extractor once (you may want to cache this outside if comparing many pairs)
+    feature_extractor = get_feature_extractor()
+
+    # Preprocess images
+    orig_rgb, orig_bgr = preprocess_image(original_img_path)
+    forged_rgb, forged_bgr = preprocess_image(forged_img_path)
+
+    # Extract deep features
+    orig_features = extract_deep_features(orig_rgb, feature_extractor)
+    forged_features = extract_deep_features(forged_rgb, feature_extractor)
+
+    # Compute weighted simhash
+    orig_hash, _, _ = compute_weighted_simhash(orig_bgr)
+    forged_hash, _, _ = compute_weighted_simhash(forged_bgr)
+
+    # Compute distances
+    hamm_dist = hamming_distance(orig_hash, forged_hash)
+    cos_sim = np.dot(orig_features, forged_features) / (np.linalg.norm(orig_features) * np.linalg.norm(forged_features))
+
+    # Prepare a concise result summary string
+    result_summary = (
+        f"Improved Algorithm Results:\n"
+        f"Hamming Distance: {hamm_dist}\n"
+        f"Cosine Similarity: {cos_sim:.4f}\n"
+    )
+
+    return result_summary

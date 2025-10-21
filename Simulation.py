@@ -1,351 +1,80 @@
 import os
 import cv2 as cv
+import hashlib
 import numpy as np
-import imagehash
-from PIL import Image
-from sklearn.metrics.pairwise import cosine_similarity
-import torch
-import torch.nn as nn
-import torchvision.models as models
-import torchvision.transforms as transforms
-from scipy.ndimage import gaussian_filter
-import shutil
+import pandas as pd
 import kagglehub
 
-# ------------------ Step 1: Image Preprocessing ------------------
-def preprocess_image(image_path, size=(224, 224)):
-    """
-    Enhanced preprocessing with CLAHE, Non-Local Means Denoising, and Unsharp Masking
-    """
-    if not os.path.exists(image_path):
-        raise FileNotFoundError(f"Error: Image not found {image_path}")
-    
-    image = cv.imread(image_path, cv.IMREAD_COLOR)
-    if image is None:
-        raise FileNotFoundError(f"Error: Could not read image {image_path}")
-    
-    # Convert to LAB color space for CLAHE
-    lab = cv.cvtColor(image, cv.COLOR_BGR2LAB)
-    l, a, b = cv.split(lab)
-    
-    # Apply CLAHE (Contrast Limited Adaptive Histogram Equalization)
-    clahe = cv.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-    l = clahe.apply(l)
-    
-    # Merge back and convert to BGR
-    lab = cv.merge([l, a, b])
-    image = cv.cvtColor(lab, cv.COLOR_LAB2BGR)
-    
-    # Apply Non-Local Means Denoising
-    image = cv.fastNlMeansDenoisingColored(image, None, 10, 10, 7, 21)
-    
-    # Unsharp masking for edge sharpening
-    gaussian = cv.GaussianBlur(image, (0, 0), 2.0)
-    image = cv.addWeighted(image, 1.5, gaussian, -0.5, 0)
-    
-    # Resize to standard size
-    image = cv.resize(image, size)
-    image_rgb = cv.cvtColor(image, cv.COLOR_BGR2RGB)
-    
-    return image_rgb, image
-
-# ------------------ Step 2: Feature Extraction using ResNet-50 ------------------
-class ResNet50FeatureExtractor(nn.Module):
-    def __init__(self):
-        super(ResNet50FeatureExtractor, self).__init__()
-        resnet = models.resnet50(pretrained=True)
-        # Remove the final classification layer
-        self.features = nn.Sequential(*list(resnet.children())[:-1])
-        
-    def forward(self, x):
-        x = self.features(x)
-        x = x.view(x.size(0), -1)
-        return x
-
-# Initialize ResNet-50 feature extractor
-resnet_extractor = ResNet50FeatureExtractor()
-resnet_extractor.eval()
-
-transform = transforms.Compose([
-    transforms.ToPILImage(),
-    transforms.Resize((224, 224)),
-    transforms.ToTensor(),
-    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-])
-
-def extract_deep_features(image_rgb):
-    """Extract high-level features using ResNet-50"""
-    image_tensor = transform(image_rgb).unsqueeze(0)
-    with torch.no_grad():
-        features = resnet_extractor(image_tensor)
-    return features.flatten().numpy()
-
-# ------------------ Step 2 & 3: Region Segmentation and Perceptual Hashing ------------------
-def compute_saliency_map(image):
-    """Compute saliency map using spectral residual method"""
-    gray = cv.cvtColor(image, cv.COLOR_BGR2GRAY) if len(image.shape) == 3 else image
-    
-    # Create saliency detector
-    saliency = cv.saliency.StaticSaliencySpectralResidual_create()
-    success, saliency_map = saliency.computeSaliency(image)
-    
-    if not success:
-        # Fallback: simple gradient-based saliency
-        grad_x = cv.Sobel(gray, cv.CV_64F, 1, 0, ksize=3)
-        grad_y = cv.Sobel(gray, cv.CV_64F, 0, 1, ksize=3)
-        saliency_map = np.sqrt(grad_x**2 + grad_y**2)
-        saliency_map = (saliency_map * 255 / np.max(saliency_map)).astype(np.uint8)
-    else:
-        saliency_map = (saliency_map * 255).astype(np.uint8)
-    
-    return saliency_map
-
-def segment_image_regions(image, saliency_map, num_regions=16):
-    """
-    Divide image into regions based on grid and compute regional properties
-    """
+def image_to_patches(image, patch_size=(8, 8)):
     h, w = image.shape[:2]
-    grid_h = int(np.sqrt(num_regions))
-    grid_w = num_regions // grid_h
-    
-    region_h = h // grid_h
-    region_w = w // grid_w
-    
-    regions = []
-    region_weights = []
-    
-    for i in range(grid_h):
-        for j in range(grid_w):
-            y1, y2 = i * region_h, (i + 1) * region_h
-            x1, x2 = j * region_w, (j + 1) * region_w
-            
-            region = image[y1:y2, x1:x2]
-            saliency_region = saliency_map[y1:y2, x1:x2]
-            
-            # Calculate region weight based on saliency
-            weight = np.mean(saliency_region) / 255.0
-            
-            regions.append(region)
-            region_weights.append(weight)
-    
-    # Normalize weights
-    total_weight = sum(region_weights)
-    region_weights = [w / total_weight for w in region_weights]
-    
-    return regions, region_weights
+    patches = []
+    for y in range(0, h, patch_size[1]):
+        for x in range(0, w, patch_size[0]):
+            patch = image[y:y+patch_size[1], x:x+patch_size[0]]
+            if patch.shape[0] == patch_size[1] and patch.shape[1] == patch_size[0]:
+                patches.append(patch)
+    return patches
 
-def compute_regional_phash(region):
-    """Compute perceptual hash for a region"""
-    region_pil = Image.fromarray(cv.cvtColor(region, cv.COLOR_BGR2RGB))
-    phash = imagehash.phash(region_pil, hash_size=8)
-    return phash
+def md5_hash_patch(patch):
+    patch_flat = patch.flatten().tobytes()
+    return hashlib.md5(patch_flat).hexdigest()
 
-# ------------------ Step 4 & 5: Adaptive Weighting and Merging ------------------
-def compute_weighted_simhash(image, num_regions=16):
-    """
-    Compute weighted SimHash from regional perceptual hashes
-    Steps 2-5 of the algorithm
-    """
-    # Compute saliency map
-    saliency_map = compute_saliency_map(image)
-    
-    # Segment image into regions
-    regions, weights = segment_image_regions(image, saliency_map, num_regions)
-    
-    # Compute perceptual hash for each region
-    regional_hashes = []
-    for region in regions:
-        phash = compute_regional_phash(region)
-        regional_hashes.append(phash)
-    
-    # Merge weighted hashes into final SimHash
-    # Convert hashes to binary arrays and apply weights
-    hash_size = 64  # 8x8 phash
-    final_hash = np.zeros(hash_size)
-    
-    for phash, weight in zip(regional_hashes, weights):
-        hash_array = np.array([int(b) for b in bin(int(str(phash), 16))[2:].zfill(hash_size)])
-        final_hash += hash_array * weight
-    
-    # Threshold to create binary hash
-    final_hash = (final_hash > 0.5).astype(int)
-    
-    # Convert to hex string for storage
-    hash_value = int(''.join(map(str, final_hash)), 2)
-    
-    return hash_value, regional_hashes, weights
+def md5_to_bits(md5hash):
+    return bin(int(md5hash, 16))[2:].zfill(128)
 
-# ------------------ Step 6: Hamming Distance Calculation ------------------
+def simhash_md5_frequency(image, patch_size=(8, 8)):
+    patches = image_to_patches(image, patch_size)
+    hashes = [md5_to_bits(md5_hash_patch(p)) for p in patches]
+    freq = {}
+    for h in hashes:
+        freq[h] = freq.get(h, 0) + 1
+    weights = [freq[h] / len(hashes) for h in hashes]
+    hash_matrix = np.array([[int(bit) for bit in h] for h in hashes])
+    weighted_sum = np.dot(weights, hash_matrix)
+    simhash = (weighted_sum > 0.5).astype(int)
+    return simhash
+
 def hamming_distance(hash1, hash2):
-    """Compute Hamming distance between two hash values"""
-    return bin(hash1 ^ hash2).count('1')
+    return sum(c1 != c2 for c1, c2 in zip(hash1, hash2))
 
-# ------------------ Step 7: Image Retrieval and Matching ------------------
-def detect_forgery(image_path, dataset_folder, hamming_threshold=15, top_n=5):
-    """
-    Complete forgery detection pipeline following the algorithm
-    """
-    if not os.path.exists(dataset_folder):
-        raise FileNotFoundError(f"Error: Dataset folder not found {dataset_folder}")
-    
-    print(f"\n{'='*60}")
-    print(f"Analyzing image: {os.path.basename(image_path)}")
-    print(f"{'='*60}\n")
-    
-    # Step 1: Preprocess input image
-    print("Step 1: Preprocessing input image...")
-    query_image_rgb, query_image_bgr = preprocess_image(image_path)
-    
-    # Steps 2-5: Extract features and compute weighted SimHash
-    print("Steps 2-5: Extracting features and computing weighted SimHash...")
-    query_hash, _, _ = compute_weighted_simhash(query_image_bgr)
-    query_deep_features = extract_deep_features(query_image_rgb)
-    
-    # Step 7: Compare with dataset
-    print(f"Step 7: Comparing with dataset images...\n")
-    
-    matches = []
-    
-    for file in os.listdir(dataset_folder):
-        file_path = os.path.join(dataset_folder, file)
-        if os.path.isfile(file_path) and file.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp')):
-            try:
-                # Preprocess database image
-                db_image_rgb, db_image_bgr = preprocess_image(file_path)
-                
-                # Compute hash and features
-                db_hash, _, _ = compute_weighted_simhash(db_image_bgr)
-                db_deep_features = extract_deep_features(db_image_rgb)
-                
-                # Step 6: Calculate Hamming distance
-                ham_dist = hamming_distance(query_hash, db_hash)
-                
-                # Additional: Cosine similarity for deep features
-                cos_sim = cosine_similarity([query_deep_features], [db_deep_features])[0][0]
-                
-                matches.append({
-                    'filename': file,
-                    'hamming_distance': ham_dist,
-                    'cosine_similarity': cos_sim,
-                    'combined_score': ham_dist - (cos_sim * 20)  # Lower is better
-                })
-                
-            except Exception as e:
-                print(f"Error processing {file}: {e}")
-                continue
-    
-    # Sort by combined score (lower is better)
-    matches.sort(key=lambda x: x['combined_score'])
-    
-    # Display results
-    print(f"\n{'='*60}")
-    print(f"TOP {min(top_n, len(matches))} MATCHES:")
-    print(f"{'='*60}\n")
-    
-    for i, match in enumerate(matches[:top_n], 1):
-        print(f"Rank {i}: {match['filename']}")
-        print(f"  Hamming Distance: {match['hamming_distance']}")
-        print(f"  Cosine Similarity: {match['cosine_similarity']:.4f}")
-        print(f"  Combined Score: {match['combined_score']:.2f}")
-        
-        if match['hamming_distance'] <= hamming_threshold:
-            print(f"  ⚠️  POTENTIAL FORGERY DETECTED (Below threshold)")
-        print()
-    
-    # Return best match
-    if matches:
-        best_match = matches[0]
-        if best_match['hamming_distance'] <= hamming_threshold:
-            print(f"✓ CONCLUSION: Image is similar to '{best_match['filename']}'")
-            print(f"  This suggests potential forgery or manipulation.")
-        else:
-            print(f"✓ CONCLUSION: No significant similarity found.")
-            print(f"  Image appears to be authentic or heavily modified.")
-    else:
-        print("No matches found in dataset.")
-    
-    return matches
+def scan_dataset_create_csv(originals_folder, forged_folder, csv_output_path):
+    data = []
+    forged_files = os.listdir(forged_folder)
+    for forged_file in forged_files:
+        forged_path = os.path.join(forged_folder, forged_file)
+        forged_img = cv.imread(forged_path, cv.IMREAD_GRAYSCALE)
+        forged_hash = simhash_md5_frequency(forged_img)
 
-# ------------------ Dataset Merging Utility ------------------
-def merge_datasets(kaggle_root, my_authentic, my_fraud, merged_root):
-    """Merge Kaggle dataset with custom dataset"""
-    dataset_folder = os.path.join(kaggle_root, "Dataset")
-    kaggle_original = os.path.join(dataset_folder, "Original")
-    kaggle_forged = os.path.join(dataset_folder, "Forged")
-        
-    merged_original = os.path.join(merged_root, "Original")
-    merged_forged = os.path.join(merged_root, "Forged")
+        best_match = None
+        best_dist = float('inf')
 
-    # Clean up old merged dataset if it exists
-    if os.path.exists(merged_root):
-        shutil.rmtree(merged_root)
+        for orig_file in os.listdir(originals_folder):
+            orig_path = os.path.join(originals_folder, orig_file)
+            orig_img = cv.imread(orig_path, cv.IMREAD_GRAYSCALE)
+            orig_hash = simhash_md5_frequency(orig_img)
+            dist = hamming_distance(forged_hash, orig_hash)
 
-    os.makedirs(merged_original, exist_ok=True)
-    os.makedirs(merged_forged, exist_ok=True)
+            if dist < best_dist:
+                best_dist = dist
+                best_match = orig_file
 
-    # Copy Kaggle Originals
-    if os.path.exists(kaggle_original):
-        for f in os.listdir(kaggle_original):
-            src = os.path.join(kaggle_original, f)
-            dst = os.path.join(merged_original, f"Kaggle_{f}")
-            shutil.copy(src, dst)
+        data.append({
+            'Forged Image': forged_file,
+            'Best Matched Original': best_match,
+            'Hamming Distance': best_dist
+        })
+        print(f"Processed forged image {forged_file}: Best original match={best_match} with Hamming distance={best_dist}")
 
-    # Copy Kaggle Forged
-    if os.path.exists(kaggle_forged):
-        for f in os.listdir(kaggle_forged):
-            src = os.path.join(kaggle_forged, f)
-            dst = os.path.join(merged_forged, f"Kaggle_{f}")
-            shutil.copy(src, dst)
+    df = pd.DataFrame(data)
+    df.to_csv(csv_output_path, index=False)
+    return df
 
-    # Copy your Authentic
-    if os.path.exists(my_authentic):
-        for f in os.listdir(my_authentic):
-            src = os.path.join(my_authentic, f)
-            dst = os.path.join(merged_original, f"MyAuth_{f}")
-            shutil.copy(src, dst)
-
-    # Copy your Fraud
-    if os.path.exists(my_fraud):
-        for f in os.listdir(my_fraud):
-            src = os.path.join(my_fraud, f)
-            dst = os.path.join(merged_forged, f"MyFraud_{f}")
-            shutil.copy(src, dst)
-
-    print(f"Dataset merged successfully to: {merged_root}")
-    return merged_root
-
-# ------------------ Main Execution ------------------
-def main():
-    # Download Kaggle dataset
-    print("Downloading Kaggle dataset...")
+if __name__ == '__main__':
     dataset_root = kagglehub.dataset_download("labid93/image-forgery-detection")
-    print(f"Dataset downloaded to: {dataset_root}")
+    original_folder = os.path.join(dataset_root, "DataSet/Original")
+    forged_folder = os.path.join(dataset_root, "DataSet/Forged")
+    output_csv = "forgery_match_results.csv"
 
-    my_authentic = "DataSet/Authentic"
-    my_fraud = "DataSet/Fraud"
-    merged_root = "MergedDataSet"
-    
-    # Merge datasets
-    print("\nMerging datasets...")
-    dataset_path = merge_datasets(dataset_root, my_authentic, my_fraud, merged_root)
-
-    # Test forgery detection
-    print("\n" + "="*60)
-    print("STARTING FORGERY DETECTION")
-    print("="*60)
-    
-    # Example: Test with a fraud image
-    test_image = os.path.join(my_fraud, "12857.jpg")
-    dataset_folder = os.path.join(dataset_path, "Original")
-
-    try:
-        matches = detect_forgery(test_image, dataset_folder, hamming_threshold=15, top_n=5)
-    except FileNotFoundError as e:
-        print(f"Error: {e}")
-        return
-    except Exception as e:
-        print(f"Unexpected error: {e}")
-        return
-
-if __name__ == "__main__":
-    main()
+    df_results = scan_dataset_create_csv(original_folder, forged_folder, output_csv)
+    print(f"\nCSV file '{output_csv}' created with forgery detection matches.")
+    print(df_results.head())
