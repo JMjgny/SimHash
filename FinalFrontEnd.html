@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <title>Simhash Image Forgery Detection</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            font-family: Arial, sans-serif;
+        }
+
+        body {
+            background: #f7f9fb;
+            color: #333;
+            line-height: 1.6;
+        }
+
+        header {
+            background: linear-gradient(135deg, #3b82f6, #0ea5e9);
+            color: white;
+            text-align: center;
+            padding: 3rem 1rem;
+        }
+
+        header h1 {
+            font-size: 2.5rem;
+            margin-bottom: 0.5rem;
+        }
+
+        header p {
+            font-size: 1.1rem;
+            opacity: 0.9;
+        }
+
+        section {
+            max-width: 1100px;
+            margin: 2rem auto;
+            padding: 0 1rem;
+        }
+
+        .section-title {
+            font-size: 1.8rem;
+            margin-bottom: 1rem;
+            color: #0f172a;
+            text-align: center;
+        }
+
+        .intro {
+            background: white;
+            padding: 1.5rem;
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+            margin-bottom: 2rem;
+            text-align: center;
+        }
+
+        .upload-area {
+            text-align: center;
+            margin-bottom: 1rem;
+        }
+
+        #previewContainer {
+            display: flex;
+            justify-content: center;
+            margin: 1rem auto 0;
+        }
+
+        #previewContainer .image-wrapper {
+            margin: 0;
+        }
+
+        /* Fixed size for both images */
+        .image-wrapper img {
+            width: 300px;
+            height: 300px;
+            object-fit: contain;
+            border: 1px solid #ccc;
+            border-radius: 8px;
+            padding: 5px;
+            box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1);
+            background: white;
+        }
+
+        button {
+            padding: 0.8rem 1.5rem;
+            background: #3b82f6;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            margin-top: 1rem;
+        }
+
+        button:hover {
+            background: #2563eb;
+        }
+
+        #result {
+            text-align: center;
+            color: #555;
+            margin-top: 1rem;
+        }
+
+        /* Side-by-side container for images after search */
+        .image-comparison {
+            display: flex;
+            justify-content: center;
+            gap: 3rem;
+            margin-top: 1.5rem;
+            flex-wrap: wrap;
+        }
+
+        .image-wrapper {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        .image-caption {
+            margin-top: 0.5rem;
+            font-weight: 600;
+            color: #0f172a;
+            text-align: center;
+        }
+
+        footer {
+            text-align: center;
+            padding: 1rem;
+            color: #555;
+            font-size: 0.9rem;
+        }
+    </style>
+</head>
+<body>
+<header>
+    <h1>Simhash Digital Image Forgery Detection</h1>
+    <p>Find the Original Version of a Tampered Image</p>
+</header>
+
+<section class="intro">
+    <p>
+        Upload a tampered image and the system will try to locate the matching original version from the backend dataset.
+    </p>
+</section>
+
+<section>
+    <h2 class="section-title">1. Upload Tampered Image</h2>
+    <div class="upload-area">
+        <input type="file" id="tamperedImage" accept="image/*" />
+    </div>
+
+    <div id="previewContainer" style="display:none;">
+        <div class="image-wrapper">
+            <img id="preview" alt="Uploaded Image Preview" />
+            <div class="image-caption">Uploaded Image</div>
+        </div>
+    </div>
+
+    <div class="upload-area">
+        <button id="searchBtn">Find Matching Original</button>
+    </div>
+
+    <div class="image-comparison" id="imageComparison" style="display:none;">
+        <div class="image-wrapper" id="resultWrapper">
+            <!-- Match result will appear here -->
+        </div>
+    </div>
+
+    <div id="result" style="margin-top: 1rem;"></div>
+</section>
+
+<footer>
+    © 2025 Cuchado - Jagonoy Thesis
+</footer>
+
+<script>
+    const tamperedInput = document.getElementById('tamperedImage');
+    const preview = document.getElementById('preview');
+    const previewContainer = document.getElementById('previewContainer');
+    const searchBtn = document.getElementById('searchBtn');
+    const result = document.getElementById('result');
+    const imageComparison = document.getElementById('imageComparison');
+    const resultWrapper = document.getElementById('resultWrapper');
+
+    tamperedInput.addEventListener('change', function (e) {
+        const file = e.target.files[0];
+        if (file) {
+            preview.src = URL.createObjectURL(file);
+            previewContainer.style.display = 'flex'; // Show preview immediately with flex for centering
+            // Hide previous search results until new search performed
+            imageComparison.style.display = 'none';
+            result.innerHTML = "<p>No search performed yet.</p>";
+            resultWrapper.innerHTML = '';
+        } else {
+            previewContainer.style.display = 'none';
+        }
+    });
+
+    searchBtn.addEventListener('click', async function () {
+        if (!tamperedInput.files[0]) {
+            alert("Please upload a tampered image first.");
+            return;
+        }
+
+        result.innerHTML = "<p>Processing... Please wait.</p>";
+        imageComparison.style.display = 'none';
+        resultWrapper.innerHTML = '';
+
+        const formData = new FormData();
+        formData.append("tampered", tamperedInput.files[0]);
+
+        try {
+            const response = await fetch("http://localhost:5000/find-original", {
+                method: "POST",
+                body: formData
+            });
+
+            if (!response.ok) {
+                throw new Error("Server error");
+            }
+
+            const data = await response.json();
+
+            if (data.status === 'not_found') {
+                result.innerHTML = `<p style="color: #dc3545;">Match Not Found in Dataset.</p>`;
+                imageComparison.style.display = 'none';
+                resultWrapper.innerHTML = '';
+            } else {
+                result.innerHTML = '';
+                imageComparison.style.display = 'flex';
+                resultWrapper.innerHTML = `
+                    <img src="${data.preview}" alt="Matched Original Image" />
+                    <div class="image-caption">Match Found: ${data.filename}</div>
+                `;
+            }
+        } catch (error) {
+            console.error(error);
+            result.innerHTML = "<p>Error processing the image or connecting to the server.</p>";
+            imageComparison.style.display = 'none';
+            resultWrapper.innerHTML = '';
+        }
+    });
+</script>
+</body>
+</html>
