@@ -31,7 +31,6 @@ def hamming_distance(hash1, hash2):
     return bin(hash1 ^ hash2).count('1')
 
 def run_sop2_result(original_img_path, modified_img_path):
-    # Load images, check existence
     if not os.path.exists(original_img_path):
         raise FileNotFoundError(f"Original image not found: {original_img_path}")
     if not os.path.exists(modified_img_path):

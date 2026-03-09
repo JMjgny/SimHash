@@ -26,27 +26,22 @@ def detect_forgery_with_metrics(image_path, dataset_folder, feature_extractor,
     error_count = 0
     matches = []
 
-    # Preprocess query image
     start = time.time()
     query_rgb, query_bgr = preprocess_image(image_path)
     stats['preproc_time_query'].append(time.time() - start)
 
-    # Extract features query image
     start = time.time()
     query_features = extract_deep_features(query_rgb, feature_extractor)
     stats['feat_ext_time_query'].append(time.time() - start)
 
-    # Compute hash query image
     start = time.time()
     query_hash, _, _ = compute_weighted_simhash(query_bgr)
     stats['hash_time_query'].append(time.time() - start)
 
-    # List all images in dataset
     image_files = [f for f in os.listdir(dataset_folder) 
                    if f.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp'))]
     print(f"Comparing against {len(image_files)} images in dataset...")
 
-    # Timings for dataset processing
     preproc_times_db = []
     feat_ext_times_db = []
     hash_times_db = []
@@ -54,26 +49,18 @@ def detect_forgery_with_metrics(image_path, dataset_folder, feature_extractor,
     for filename in image_files:
         try:
             file_path = os.path.join(dataset_folder, filename)
-
-            # Preprocessing time
             start = time.time()
             db_rgb, db_bgr = preprocess_image(file_path)
             preproc_time = time.time() - start
             preproc_times_db.append(preproc_time)
-
-            # Feature extraction time
             start = time.time()
             db_features = extract_deep_features(db_rgb, feature_extractor)
             feat_ext_time = time.time() - start
             feat_ext_times_db.append(feat_ext_time)
-
-            # Hashing time
             start = time.time()
             db_hash, _, _ = compute_weighted_simhash(db_bgr)
             hash_time = time.time() - start
             hash_times_db.append(hash_time)
-
-            # Compute similarity metrics
             ham_dist = hamming_distance(query_hash, db_hash)
             cos_sim = cosine_similarity([query_features], [db_features])[0][0]
             combined_score = ham_dist - (cos_sim * 20)
@@ -84,8 +71,6 @@ def detect_forgery_with_metrics(image_path, dataset_folder, feature_extractor,
                 'cosine_similarity': cos_sim,
                 'combined_score': combined_score
             })
-
-            # Log to stats for this comparison
             stats['filename'].append(filename)
             stats['hamming_distance'].append(ham_dist)
             stats['cosine_similarity'].append(cos_sim)
@@ -97,7 +82,6 @@ def detect_forgery_with_metrics(image_path, dataset_folder, feature_extractor,
         except Exception as e:
             print(f"Error processing {filename}: {e}")
             error_count += 1
-            # Append None or NaN to keep list lengths equal
             stats['filename'].append(filename)
             stats['hamming_distance'].append(None)
             stats['cosine_similarity'].append(None)
@@ -135,21 +119,16 @@ def detect_forgery_with_metrics(image_path, dataset_folder, feature_extractor,
 
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
-
-    # Debug: Check that all lists are the same length before DataFrame creation
     print("Lengths of stats lists:")
     for key, lst in stats.items():
         print(f"{key}: {len(lst)}")
 
     stats_for_df = {k: v for k, v in stats.items() if not k.endswith('_query')}
-    # Save per-image metrics only (exclude averaged lists)
     df_stats = pd.DataFrame(stats_for_df)
 
     csv_path = 'forgery_detection_metrics.csv'
     df_stats.to_csv(csv_path, index=False)
     print(f"\nSaved detailed metrics to {csv_path}")
-
-    # Optionally, print query-level preprocessing and feature extraction times separately
     print("Query-level times:")
     for key in ['preproc_time_query', 'feat_ext_time_query', 'hash_time_query']:
         print(f"{key}: {stats[key][0]:.4f} seconds")
@@ -157,26 +136,15 @@ def detect_forgery_with_metrics(image_path, dataset_folder, feature_extractor,
     return matches, df_stats
 
 def run_improved_pairwise(original_img_path, forged_img_path):
-    # Initialize feature extractor once (you may want to cache this outside if comparing many pairs)
     feature_extractor = get_feature_extractor()
-
-    # Preprocess images
     orig_rgb, orig_bgr = preprocess_image(original_img_path)
     forged_rgb, forged_bgr = preprocess_image(forged_img_path)
-
-    # Extract deep features
     orig_features = extract_deep_features(orig_rgb, feature_extractor)
     forged_features = extract_deep_features(forged_rgb, feature_extractor)
-
-    # Compute weighted simhash
     orig_hash, _, _ = compute_weighted_simhash(orig_bgr)
     forged_hash, _, _ = compute_weighted_simhash(forged_bgr)
-
-    # Compute distances
     hamm_dist = hamming_distance(orig_hash, forged_hash)
     cos_sim = np.dot(orig_features, forged_features) / (np.linalg.norm(orig_features) * np.linalg.norm(forged_features))
-
-    # Prepare a concise result summary string
     result_summary = (
         f"Improved Algorithm Results:\n"
         f"Hamming Distance: {hamm_dist}\n"

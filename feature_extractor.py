@@ -3,7 +3,6 @@ import torch.nn as nn
 import torchvision.models as models
 import torchvision.transforms as transforms
 
-# Check for GPU availability
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using device: {device}")
 if torch.cuda.is_available():
@@ -31,17 +30,15 @@ transform = transforms.Compose([
 def get_feature_extractor():
     """Initialize and return ResNet-50 feature extractor on GPU"""
     extractor = ResNet50FeatureExtractor()
-    extractor = extractor.to(device)  # Move model to GPU
+    extractor = extractor.to(device) 
     extractor.eval()
     return extractor
 
 def extract_deep_features(image_rgb, extractor):
     """Extract high-level features using ResNet-50 with GPU acceleration"""
     image_tensor = transform(image_rgb).unsqueeze(0)
-    image_tensor = image_tensor.to(device)  # Move tensor to GPU
+    image_tensor = image_tensor.to(device)  
     
     with torch.no_grad():
         features = extractor(image_tensor)
-    
-    # Move result back to CPU for NumPy conversion
     return features.cpu().flatten().numpy()

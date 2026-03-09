@@ -5,7 +5,6 @@ from forgery_detector import detect_forgery_with_metrics
 from feature_extractor import get_feature_extractor
 
 def main():
-    # Check CUDA availability
     print("="*60)
     print("GPU CONFIGURATION")
     print("="*60)

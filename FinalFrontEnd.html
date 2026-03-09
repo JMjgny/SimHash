@@ -71,7 +71,6 @@
             margin: 0;
         }
 
-        /* Fixed size for both images */
         .image-wrapper img {
             width: 300px;
             height: 300px;
@@ -103,7 +102,6 @@
             margin-top: 1rem;
         }
 
-        /* Side-by-side container for images after search */
         .image-comparison {
             display: flex;
             justify-content: center;
@@ -188,8 +186,7 @@
         const file = e.target.files[0];
         if (file) {
             preview.src = URL.createObjectURL(file);
-            previewContainer.style.display = 'flex'; // Show preview immediately with flex for centering
-            // Hide previous search results until new search performed
+            previewContainer.style.display = 'flex';
             imageComparison.style.display = 'none';
             result.innerHTML = "<p>No search performed yet.</p>";
             resultWrapper.innerHTML = '';

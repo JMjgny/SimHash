@@ -43,7 +43,6 @@ def run_sop1_result(original_img_path, modified_img_path):
             f"Number of patches with different MD5 hashes: {diff_count}\n"
             f"Percentage difference: {percent_diff:.2f}%")
 
-# Optional: Example usage
 if __name__ == "__main__":
     print(run_sop1_result(
         r"C:\Users\Marc\.cache\kagglehub\datasets\labid93\image-forgery-detection\versions\1\Dataset\Original\before_photo.jpg",

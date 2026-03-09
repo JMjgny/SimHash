@@ -54,6 +54,4 @@ def run_sop3_result(original_img_path, modified_img_path):
         results.append(f"{label} SimHash: {bin(h)}")
         results.append(f"Hamming Distance from Original: {dist}")
 
-    # Optionally, save or plot images here if you want in your function.
-
     return "\n".join(results)
