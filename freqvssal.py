@@ -1,6 +1,5 @@
 import numpy as np
 import cv2
-
 from saliency import compute_saliency_map
 from segmentation import segment_image_regions, compute_regional_phash
 from config import HASH_SIZE, NUM_REGIONS
